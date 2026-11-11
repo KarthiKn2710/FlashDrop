@@ -1,0 +1,11 @@
+<resources>
+    <color name="fd_background">#101216</color>
+    <color name="fd_accent">#A78BFA</color>
+
+    <style name="Theme.FlashDrop" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/fd_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:colorAccent">@color/fd_accent</item>
+    </style>
+</resources>
