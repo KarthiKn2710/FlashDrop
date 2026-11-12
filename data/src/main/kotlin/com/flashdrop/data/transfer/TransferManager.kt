@@ -59,12 +59,16 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -95,6 +99,8 @@ class TransferManager @Inject constructor(
 
     @Volatile private var active: ActiveSession? = null
     private var listenJob: Job? = null
+    private var stopWhenIdle = false
+    private val provisional = AtomicInteger()
 
     init {
         scope.launch { recoverAfterRestart() }
@@ -124,6 +130,14 @@ class TransferManager @Inject constructor(
 
     override fun stopReceiving() {
         synchronized(lock) {
+            // Stopping tears down the listening transports (for Wi-Fi Direct, the whole group),
+            // which would kill an incoming transfer in flight: finish that first.
+            val receivingNow = active?.let { it.direction == TransferDirection.RECEIVE && !it.status.isTerminal } == true
+            if (receivingNow) {
+                stopWhenIdle = true
+                return
+            }
+            stopWhenIdle = false
             listenJob?.cancel()
             listenJob = null
         }
@@ -172,23 +186,61 @@ class TransferManager @Inject constructor(
         }
     }
 
+    /**
+     * A TLS connection alone proves nothing about intent, so a new link starts as a provisional
+     * session that the UI never sees. It only becomes the active session in [claim], once the
+     * peer has completed the FDTP hello. Port scans and reconnect probes therefore cause no
+     * flicker and cannot displace a session in progress.
+     */
     private fun onIncomingLink(link: FdtpLink, transport: TransportType, advertisement: Advertisement) {
-        val s = synchronized(lock) {
-            val current = active
-            val replaceable = current == null || current.status.isTerminal ||
-                (current.direction == TransferDirection.RECEIVE && current.status == TransferStatus.Interrupted)
-            if (!replaceable) return@synchronized null
-            current?.watchdog?.cancel()
-            ActiveSession(TransferDirection.RECEIVE, "", transport).also {
-                it.status = TransferStatus.Authenticating
-                active = it
-            }
-        }
-        if (s == null) {
+        if (provisional.incrementAndGet() > MAX_PROVISIONAL_SESSIONS) {
+            provisional.decrementAndGet()
             scope.launch { FdtpConnection.rejectBusy(link) }
             return
         }
-        s.job = scope.launch { runReceive(s, link, advertisement) }
+        val s = ActiveSession(TransferDirection.RECEIVE, "", transport).also { it.status = TransferStatus.Authenticating }
+        s.job = scope.launch {
+            try {
+                runReceive(s, link, advertisement)
+            } finally {
+                if (!s.claimed) provisional.decrementAndGet()
+            }
+        }
+    }
+
+    /**
+     * The same peer connecting again while its transfer is "running" means that connection is
+     * dead and we simply have not timed out yet: treat the old session as interrupted right away.
+     */
+    private suspend fun supersedeStale(s: ActiveSession, fingerprint: ByteArray) {
+        val stale = synchronized(lock) {
+            active?.takeIf {
+                it !== s && it.direction == TransferDirection.RECEIVE && it.started && !it.status.isTerminal &&
+                    it.status != TransferStatus.Interrupted && it.peerFingerprint?.contentEquals(fingerprint) == true
+            }
+        }
+        if (stale != null) {
+            stale.job?.cancelAndJoin()
+            if (active === stale && !stale.status.isTerminal) {
+                setStatus(stale, TransferStatus.Interrupted, "Connection lost. Waiting for the sender to reconnect…")
+            }
+        }
+    }
+
+    /** Makes a provisional incoming session the active one, or refuses it when the device is busy. */
+    private fun claim(s: ActiveSession) {
+        synchronized(lock) {
+            val current = active
+            val replaceable = current == null || current === s || current.status.isTerminal ||
+                (current.direction == TransferDirection.RECEIVE && current.status == TransferStatus.Interrupted)
+            if (!replaceable) throw ProtocolException(ErrorCode.BUSY, "The other device is busy with another transfer")
+            current?.watchdog?.cancel()
+            active = s
+            if (!s.claimed) {
+                s.claimed = true
+                provisional.decrementAndGet()
+            }
+        }
     }
 
     private suspend fun runReceive(s: ActiveSession, link: FdtpLink, advertisement: Advertisement) {
@@ -257,8 +309,53 @@ class TransferManager @Inject constructor(
         s.job = scope.launch { runSend(s) }
     }
 
+    /**
+     * Opens the link for a send. The first connection goes to the device the user picked. A
+     * reconnection must reach the same authenticated key, but not necessarily the same address:
+     * a restarted receiver listens on a new port and advertises a new ephemeral id. So when the
+     * old address fails, nearby devices are probed and the one proving the pinned key is used.
+     */
+    private suspend fun openLink(s: ActiveSession): FdtpLink {
+        val device = s.device ?: throw IOException("No device")
+        val pinned = s.peerFingerprint
+        val transport = transports.firstOrNull { it.type == device.transport }
+            ?: throw ProtocolException(ErrorCode.INTERNAL, "This connection type is not available")
+        if (!s.started || pinned == null) return transport.connect(device)
+
+        try {
+            val link = transport.connect(device)
+            if (pinned.contentEquals(link.peerFingerprint)) return link
+            link.close()
+        } catch (e: IOException) {
+            // fall through to rediscovery
+        }
+        val tried = HashSet<String>()
+        val flows = transports.filter { it.isAvailable() }.map { it.discover().catch { } }
+        return withTimeoutOrNull(REDISCOVERY_MS) {
+            flows.merge().mapNotNull { candidates ->
+                var match: FdtpLink? = null
+                for (candidate in candidates) {
+                    // Joining a Wi-Fi Direct group prompts its owner, so never probe strangers there.
+                    if (candidate.transport == TransportType.WIFI_DIRECT && candidate.host != device.host) continue
+                    if (!tried.add("${candidate.transport}/${candidate.host}/${candidate.port}")) continue
+                    val link = try {
+                        transports.first { it.type == candidate.transport }.connect(candidate)
+                    } catch (e: IOException) {
+                        continue
+                    }
+                    if (pinned.contentEquals(link.peerFingerprint)) {
+                        s.device = candidate
+                        match = link
+                        break
+                    }
+                    link.close()
+                }
+                match
+            }.first()
+        } ?: throw IOException("The other device is not reachable")
+    }
+
     private suspend fun runSend(s: ActiveSession) {
-        val device = s.device ?: return
         val local = LocalDevice(Hashing.hex(Hashing.randomBytes(6)), settings.current().deviceName)
         if (!s.persisted) persistNew(s, manifestDigest = "", destinationTree = null)
         val entries = s.files.map { slot ->
@@ -272,18 +369,27 @@ class TransferManager @Inject constructor(
             )
         }
         var attempt = 0
+        var bytesBefore = 0L
+
+        /** Bounded exponential backoff. Returns false when the attempts are used up. */
+        suspend fun backOff(): Boolean {
+            if (s.transferred.get() > bytesBefore) attempt = 0 // progress was made: start over
+            attempt++
+            if (attempt > MAX_RECONNECT_ATTEMPTS) {
+                s.canRetry = true
+                end(s, TransferStatus.Failed, "Connection lost")
+                return false
+            }
+            setStatus(s, TransferStatus.Interrupted, "Connection lost. Reconnecting…")
+            delay(RECONNECT_BASE_DELAY_MS shl (attempt - 1))
+            return true
+        }
+
         while (true) {
-            val bytesBefore = s.transferred.get()
+            bytesBefore = s.transferred.get()
             try {
                 setStatus(s, if (s.started) TransferStatus.Reconnecting else TransferStatus.Connecting, null)
-                val transport = transports.firstOrNull { it.type == device.transport }
-                    ?: throw ProtocolException(ErrorCode.INTERNAL, "This connection type is not available")
-                val link = transport.connect(device)
-                val pinned = s.peerFingerprint
-                if (pinned != null && !pinned.contentEquals(link.peerFingerprint)) {
-                    link.close()
-                    throw ProtocolException(ErrorCode.AUTH_FAILED, "The other device's identity changed; transfer stopped")
-                }
+                val link = openLink(s)
                 val engine = FdtpSender(link, local, s.sessionId, entries, resume = s.started, SendCallbacks(s), s.control)
                 s.sender = engine
                 finish(s, engine.run())
@@ -300,6 +406,12 @@ class TransferManager @Inject constructor(
                 end(s, if (e.byPeer) TransferStatus.Rejected else TransferStatus.Cancelled, e.message)
                 return
             } catch (e: ProtocolException) {
+                // "Busy" while resuming means the receiver has not noticed the dropped connection
+                // yet; it will, so keep trying like for any other interruption.
+                if (s.started && e.remote && e.code == ErrorCode.BUSY) {
+                    if (!backOff()) return
+                    continue
+                }
                 // A receiver-side storage problem (e.g. disk full) can be fixed and retried.
                 s.canRetry = s.started && e.code == ErrorCode.STORAGE_ERROR
                 end(s, TransferStatus.Failed, e.message)
@@ -309,15 +421,7 @@ class TransferManager @Inject constructor(
                     end(s, TransferStatus.Failed, "Could not connect to ${s.peerName.ifBlank { "the device" }}")
                     return
                 }
-                if (s.transferred.get() > bytesBefore) attempt = 0 // progress was made: start backoff over
-                attempt++
-                if (attempt > MAX_RECONNECT_ATTEMPTS) {
-                    s.canRetry = true
-                    end(s, TransferStatus.Failed, "Connection lost")
-                    return
-                }
-                setStatus(s, TransferStatus.Interrupted, "Connection lost. Reconnecting…")
-                delay(RECONNECT_BASE_DELAY_MS shl (attempt - 1)) // bounded exponential backoff
+                if (!backOff()) return
             } catch (e: Exception) {
                 Log.e(TAG, "Send failed", e)
                 end(s, TransferStatus.Failed, e.message ?: "Unexpected error")
@@ -338,7 +442,7 @@ class TransferManager @Inject constructor(
 
     override fun pause() {
         val s = active ?: return
-        if (s.status == TransferStatus.Transferring) s.control.localPaused.value = true
+        if (s.status == TransferStatus.Transferring || s.status == TransferStatus.Paused) s.control.localPaused.value = true
     }
 
     override fun resume() {
@@ -352,6 +456,9 @@ class TransferManager @Inject constructor(
             val who = if (s.direction == TransferDirection.SEND) "sender" else "receiver"
             s.sender?.sendCancel("Cancelled by the $who")
             s.receiver?.sendCancel("Cancelled by the $who")
+            // Closing a socket with unread data resets it, and a reset can destroy the cancel
+            // message in flight. Keep the connection draining briefly so the peer reads it.
+            if (s.sender != null || s.receiver != null) delay(CANCEL_GRACE_MS)
             s.watchdog?.cancel()
             s.job?.cancelAndJoin()
             try {
@@ -417,6 +524,11 @@ class TransferManager @Inject constructor(
                 return true
             }
 
+            // Only now does the session need the screen; until then it stays provisional.
+            if (s.direction == TransferDirection.RECEIVE) {
+                supersedeStale(s, peer.fingerprint)
+                claim(s)
+            }
             val decision = CompletableDeferred<Pair<Boolean, Boolean>>()
             s.pairing = PendingPairing(PairingPrompt(name, code, Fingerprints.display(peer.fingerprint)), decision)
             publish(s)
@@ -455,13 +567,22 @@ class TransferManager @Inject constructor(
             val digest = Hashing.hex(manifestDigest)
             val slots = files.map { FileSlot(it.fileId, it.fileName, it.relativePath, it.fileSize, it.mimeType, it.isDirectory, null) }
 
+            supersedeStale(s, peer.fingerprint)
+
             // Resume: same session, same peer key, same manifest. No second approval needed.
+            // A refused resume is answered without ever becoming the visible session, so it
+            // cannot replace what the user is looking at (e.g. the summary of a cancelled transfer).
             val existing = dao.findSession(sessionId)
             if (existing != null) {
                 val resumable = existing.direction == TransferDirection.RECEIVE.name &&
                     existing.status == TransferStatus.Interrupted.name &&
                     existing.remoteFingerprint == fingerprint && existing.manifestDigest == digest
-                if (!resumable) return Approval.Rejected("This transfer cannot be resumed")
+                if (!resumable) {
+                    return Approval.Rejected(
+                        if (existing.status == TransferStatus.Cancelled.name) "Cancelled by the receiver" else "This transfer cannot be resumed",
+                    )
+                }
+                claim(s)
                 val store = try {
                     destinations.create(existing.destinationTree, "Custom folder")
                 } catch (e: Exception) {
@@ -474,6 +595,7 @@ class TransferManager @Inject constructor(
                 return Approval.Accepted(PersistentReceiveSink(sessionId, files, chunkSize, store, dao).also { s.sink = it })
             }
 
+            claim(s)
             val config = settings.current()
             val store = openDestination(config)
             val free = store.freeBytes()
@@ -548,6 +670,8 @@ class TransferManager @Inject constructor(
         s.receiver = null
         s.control.localPaused.value = false
         setStatus(s, status, message, persistAs)
+        // A stop requested while this transfer was running takes effect now.
+        if (s.direction == TransferDirection.RECEIVE && status.isTerminal && stopWhenIdle) stopReceiving()
     }
 
     private fun finish(s: ActiveSession, result: TransferResult) {
@@ -688,7 +812,10 @@ class TransferManager @Inject constructor(
     private companion object {
         const val TAG = "TransferManager"
         const val PUBLISH_INTERVAL_MS = 200L
-        const val MAX_RECONNECT_ATTEMPTS = 5
+        const val MAX_RECONNECT_ATTEMPTS = 6
+        const val REDISCOVERY_MS = 6_000L
+        const val CANCEL_GRACE_MS = 400L
+        const val MAX_PROVISIONAL_SESSIONS = 4
         const val RECONNECT_BASE_DELAY_MS = 1_000L
         const val RECEIVER_RESUME_WAIT_MS = 120_000L
         const val RETENTION_MS = 24L * 60 * 60 * 1000

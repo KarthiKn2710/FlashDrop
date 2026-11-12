@@ -74,6 +74,7 @@ import com.flashdrop.core.model.PairingPrompt
 import com.flashdrop.core.model.TransferDirection
 import com.flashdrop.core.model.TransferSnapshot
 import com.flashdrop.core.model.TransferStatus
+import com.flashdrop.domain.repository.SelectionRepository
 import com.flashdrop.domain.repository.SettingsRepository
 import com.flashdrop.domain.repository.TransferController
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -86,6 +87,7 @@ import javax.inject.Inject
 class TransferViewModel @Inject constructor(
     private val controller: TransferController,
     private val settings: SettingsRepository,
+    private val selection: SelectionRepository,
 ) : ViewModel() {
     val session: StateFlow<TransferSnapshot?> = controller.session
 
@@ -97,7 +99,12 @@ class TransferViewModel @Inject constructor(
     fun retry() = controller.retry()
 
     fun done() {
-        val wasReceive = controller.session.value?.direction == TransferDirection.RECEIVE
+        val finished = controller.session.value
+        val wasReceive = finished?.direction == TransferDirection.RECEIVE
+        // A delivered selection is done with; keep it after a failure so it can be sent again.
+        if (finished?.direction == TransferDirection.SEND && finished.status == TransferStatus.Completed && finished.failedFiles == 0) {
+            selection.clear()
+        }
         controller.clearFinished()
         if (wasReceive) {
             viewModelScope.launch {

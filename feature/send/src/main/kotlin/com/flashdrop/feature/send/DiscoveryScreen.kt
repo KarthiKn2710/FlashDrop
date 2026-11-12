@@ -33,6 +33,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -106,6 +108,7 @@ class DiscoveryViewModel @Inject constructor(
 fun DiscoveryScreen(onBack: () -> Unit, onStarted: () -> Unit, viewModel: DiscoveryViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var manualOpen by rememberSaveable { mutableStateOf(false) }
+    val context = LocalContext.current
 
     TransferPermissionsEffect(onResult = viewModel::refresh)
 
@@ -163,7 +166,10 @@ fun DiscoveryScreen(onBack: () -> Unit, onStarted: () -> Unit, viewModel: Discov
                     }
                 }
                 items(state.devices, key = { it.id }) { device ->
-                    FdCard(Modifier.fillMaxWidth(), onClick = { if (viewModel.send(device)) onStarted() }) {
+                    FdCard(Modifier.fillMaxWidth(), onClick = {
+                        if (viewModel.send(device)) onStarted()
+                        else Toast.makeText(context, "Another transfer is still running", Toast.LENGTH_SHORT).show()
+                    }) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             IconBadge(Icons.Rounded.PhoneAndroid)
                             Spacer(Modifier.width(12.dp))

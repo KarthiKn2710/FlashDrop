@@ -116,7 +116,7 @@ class FdtpSender(
         val remoteComplete = CompletableDeferred<Unit>()
         var allVerified = false
 
-        scope.launch {
+        val listener = scope.launch {
             try {
                 for (frame in conn.incoming) {
                     when (frame.type) {
@@ -161,6 +161,7 @@ class FdtpSender(
         var sent = 0L
         var expectedVerifications = 0
 
+        try {
         for ((index, entry) in entries.withIndex()) {
             if (entry.isDirectory) continue
             val state = resumeState[entry.fileId]
@@ -230,6 +231,13 @@ class FdtpSender(
             conn.send(FrameType.FILE_END, FileEnd(entry.fileId, if (aborted) ByteArray(0) else digest.digest(), aborted))
             expectedVerifications++
         }
+        } catch (e: IOException) {
+            // A write can fail because the peer cancelled or reported an error and then closed.
+            // Its reason is usually already waiting in the receive path: prefer it (the listener
+            // then fails the session with the precise cause) over a generic connection loss.
+            withTimeoutOrNull(PEER_REASON_GRACE_MS) { listener.join() }
+            throw e
+        }
 
         // ---- completion ------------------------------------------------------------------
         pauseJob.cancel()
@@ -275,6 +283,10 @@ class FdtpSender(
         } finally {
             localConfirm.cancel()
         }
+    }
+
+    private companion object {
+        const val PEER_REASON_GRACE_MS = 1_000L
     }
 
     /** Reads exactly [want] bytes unless the source ends or fails; returns the bytes read. */

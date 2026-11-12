@@ -251,4 +251,27 @@ class FdtpSessionTest {
             if (error !is RemoteCancelledException) fail("expected remote cancel but was $error")
         }
     }
+
+    @Test
+    fun receiverCancelMidTransferIsReportedAsCancelNotAsConnectionLoss() = runBlocking {
+        val files = listOf(testFile("huge.bin", TEST_CHUNK * 200))
+        val pair = linkPair()
+        val receiverCallbacks = TestReceiver()
+        supervisorScope {
+            val engine = FdtpReceiver(pair.serverLink(), SERVER, receiverCallbacks, SessionControl(), maxChunkSize = TEST_CHUNK)
+            val receiver = async(Dispatchers.IO) { runCatching { engine.run() } }
+            val sender = async(Dispatchers.IO) {
+                runCatching {
+                    FdtpSender(pair.clientLink(), CLIENT, SESSION, entriesOf(files), false, TestSender(files), SessionControl(), TEST_CHUNK).run()
+                }
+            }
+            while (TransferStatus.Transferring !in receiverCallbacks.statuses) delay(10)
+            delay(50) // the sender is now busy writing chunks
+            engine.sendCancel("Cancelled by the receiver")
+            delay(400) // same grace the app gives the peer to read the message
+            receiver.cancel()
+            val error = withTimeout(10_000) { sender.await() }.exceptionOrNull()
+            if (error !is RemoteCancelledException) fail("expected remote cancel but was $error")
+        }
+    }
 }

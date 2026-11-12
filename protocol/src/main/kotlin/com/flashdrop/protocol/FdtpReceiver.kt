@@ -231,7 +231,6 @@ class FdtpReceiver(
                                 file.position != file.entry.fileSize ->
                                     throw ProtocolException(ErrorCode.INVALID_CHUNK, "File ended at the wrong size")
                                 MessageDigest.isEqual(file.digest.digest(), end.sha256) -> {
-                                    file.sink.commit(file.position)
                                     file.sink.complete(end.sha256)
                                     true
                                 }

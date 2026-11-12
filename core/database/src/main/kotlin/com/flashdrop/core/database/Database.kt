@@ -61,8 +61,11 @@ interface TransferDao {
     @Query("UPDATE transfer_files SET completedBytes = :bytes, status = :status WHERE sessionId = :sessionId AND fileId = :fileId")
     fun updateFileProgress(sessionId: String, fileId: String, bytes: Long, status: String)
 
-    @Query("UPDATE transfer_files SET temporaryUri = :temporaryUri WHERE sessionId = :sessionId AND fileId = :fileId")
-    fun setTemporaryUri(sessionId: String, fileId: String, temporaryUri: String?)
+    @Query(
+        "UPDATE transfer_files SET temporaryUri = :temporaryUri, status = :status, completedBytes = :bytes " +
+            "WHERE sessionId = :sessionId AND fileId = :fileId",
+    )
+    fun startFile(sessionId: String, fileId: String, temporaryUri: String, status: String, bytes: Long)
 
     @Query(
         "UPDATE transfer_files SET status = :status, completedBytes = :bytes, sha256 = :sha256, " +

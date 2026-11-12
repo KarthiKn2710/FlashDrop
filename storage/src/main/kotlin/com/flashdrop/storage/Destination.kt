@@ -178,6 +178,17 @@ internal class TreeDestination(private val context: Context, private val tree: U
     private val root: DocumentFile = DocumentFile.fromTreeUri(context, tree) ?: throw IOException("Destination folder is not available")
     private val directories = HashMap<String, DocumentFile>()
 
+    /**
+     * Names present in each destination folder, listed once per folder. Looking a name up through
+     * the provider means listing the whole folder, which made every file cost O(folder size).
+     */
+    private val names = HashMap<String, HashSet<String>>()
+
+    @Synchronized
+    private fun namesIn(path: String, dir: DocumentFile): HashSet<String> = names.getOrPut(path) {
+        dir.listFiles().mapNotNullTo(HashSet()) { it.name }
+    }
+
     override val rootUri: String =
         DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree)).toString()
 
@@ -187,9 +198,12 @@ internal class TreeDestination(private val context: Context, private val tree: U
         directories[path]?.let { return it }
         val parent = directory(path.substringBeforeLast('/', ""))
         val name = path.substringAfterLast('/')
-        val dir = parent.findFile(name)?.takeIf { it.isDirectory }
-            ?: parent.createDirectory(name)
-            ?: throw IOException("Cannot create folder $name")
+        val parentPath = path.substringBeforeLast('/', "")
+        val siblings = namesIn(parentPath, parent)
+        val existing = if (name in siblings) parent.findFile(name)?.takeIf { it.isDirectory } else null
+        val dir = existing ?: parent.createDirectory(name) ?: throw IOException("Cannot create folder $name")
+        dir.name?.let { siblings.add(it) }
+        if (existing == null) names[path] = HashSet() // just created, so known to be empty
         directories[path] = dir
         return dir
     }
@@ -199,11 +213,15 @@ internal class TreeDestination(private val context: Context, private val tree: U
     }
 
     override fun createTemp(relativePath: String): String {
-        val dir = directory(relativePath.substringBeforeLast('/', ""))
+        val dirPath = relativePath.substringBeforeLast('/', "")
+        val dir = directory(dirPath)
+        val siblings = namesIn(dirPath, dir)
         val tempName = relativePath.substringAfterLast('/') + TEMP_SUFFIX
-        dir.findFile(tempName)?.delete() // stale partial from an abandoned session
-        return dir.createFile("application/octet-stream", tempName)?.uri?.toString()
+        if (tempName in siblings) dir.findFile(tempName)?.delete() // stale partial from an abandoned session
+        val created = dir.createFile("application/octet-stream", tempName)
             ?: throw IOException("Cannot create ${relativePath.substringAfterLast('/')}")
+        synchronized(this) { siblings.add(created.name ?: tempName) }
+        return created.uri.toString()
     }
 
     override fun open(temporaryUri: String): TempFile = openTemp(context, temporaryUri)
@@ -211,8 +229,9 @@ internal class TreeDestination(private val context: Context, private val tree: U
     override fun exists(temporaryUri: String): Boolean = documentExists(context, temporaryUri)
 
     override fun finalize(temporaryUri: String, relativePath: String): String {
-        val dir = directory(relativePath.substringBeforeLast('/', ""))
-        val finalName = uniqueName(dir, relativePath.substringAfterLast('/'))
+        val dirPath = relativePath.substringBeforeLast('/', "")
+        val dir = directory(dirPath)
+        val finalName = uniqueName(namesIn(dirPath, dir), relativePath.substringAfterLast('/'))
         val source = Uri.parse(temporaryUri)
 
         // Preferred: atomic rename inside the provider.
@@ -245,17 +264,18 @@ internal class TreeDestination(private val context: Context, private val tree: U
     }
 
     /** "name.ext" -> "name (1).ext" ... so an existing file is never silently overwritten. */
-    private fun uniqueName(dir: DocumentFile, name: String): String {
-        if (dir.findFile(name) == null) return name
-        val dot = name.lastIndexOf('.')
-        val base = if (dot > 0) name.substring(0, dot) else name
-        val extension = if (dot > 0) name.substring(dot) else ""
-        var n = 1
-        while (true) {
-            val candidate = "$base ($n)$extension"
-            if (dir.findFile(candidate) == null) return candidate
-            n++
+    @Synchronized
+    private fun uniqueName(taken: HashSet<String>, name: String): String {
+        var candidate = name
+        if (candidate in taken) {
+            val dot = name.lastIndexOf('.')
+            val base = if (dot > 0) name.substring(0, dot) else name
+            val extension = if (dot > 0) name.substring(dot) else ""
+            var n = 1
+            do candidate = "$base (${n++})$extension" while (candidate in taken)
         }
+        taken.add(candidate) // reserve it for this session
+        return candidate
     }
 
     override fun discard(temporaryUri: String) {

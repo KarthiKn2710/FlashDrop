@@ -66,6 +66,9 @@ internal class ActiveSession(val direction: TransferDirection, @Volatile var ses
     /** The data phase was reached at least once, so a lost connection can be resumed. */
     @Volatile var started = false
     @Volatile var persisted = false
+
+    /** An incoming session becomes the active one only after the peer completed the FDTP hello. */
+    @Volatile var claimed = false
     @Volatile var canRetry = false
     @Volatile var device: RemoteDevice? = null
     @Volatile var destinationLabel: String? = null
@@ -167,13 +170,14 @@ internal class ActiveSession(val direction: TransferDirection, @Volatile var ses
             currentFile = slots.getOrNull(current)?.name,
             pairing = pairing?.prompt,
             incoming = incoming,
-            message = message,
+            message = message ?: "Paused by the other device".takeIf { status == TransferStatus.Paused && !control.localPaused.value },
             failedFiles = failedCount(),
             averageSpeed = averageSpeed(),
             elapsedMillis = activeMillis,
             destinationLabel = destinationLabel,
             destinationUri = destinationUri,
             canRetry = canRetry,
+            pausedLocally = control.localPaused.value,
         )
     }
 

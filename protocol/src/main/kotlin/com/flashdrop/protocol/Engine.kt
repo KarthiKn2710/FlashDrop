@@ -84,7 +84,7 @@ interface FileSink {
     /** Makes everything up to [position] durable and records a checkpoint. */
     fun commit(position: Long)
 
-    /** Integrity verified: move the temporary file to its final name. */
+    /** Integrity verified: make the data durable as needed and move the file to its final name. */
     fun complete(sha256: ByteArray)
 
     /** Integrity failed or the file was aborted: delete the temporary data. */

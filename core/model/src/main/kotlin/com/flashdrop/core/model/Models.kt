@@ -87,9 +87,11 @@ data class TransferSnapshot(
     val destinationLabel: String?,
     val destinationUri: String?,
     val canRetry: Boolean,
+    /** False when the transfer is paused only because the other device paused it. */
+    val pausedLocally: Boolean = false,
 ) {
     val canPause: Boolean get() = status == TransferStatus.Transferring
-    val canResume: Boolean get() = status == TransferStatus.Paused
+    val canResume: Boolean get() = status == TransferStatus.Paused && pausedLocally
     val canCancel: Boolean get() = !status.isTerminal
     val progress: Float
         get() = if (totalBytes <= 0L) 0f else (transferredBytes.toDouble() / totalBytes).toFloat().coerceIn(0f, 1f)
