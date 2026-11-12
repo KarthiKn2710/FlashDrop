@@ -8,3 +8,9 @@ build/
 /captures
 *.apk
 *.aab
+
+# Release signing key and its passwords: never commit these.
+/keystore/
+/keystore.properties
+*.jks
+*.keystore
