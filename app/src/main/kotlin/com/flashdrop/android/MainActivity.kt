@@ -18,7 +18,13 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import com.flashdrop.core.designsystem.FdColors
+import com.flashdrop.core.designsystem.FdMotion
 import com.flashdrop.core.designsystem.FlashDropTheme
 import com.flashdrop.domain.repository.TransferController
 import com.flashdrop.feature.history.HistoryDetailScreen
@@ -84,7 +90,28 @@ fun FlashDropNavHost(appViewModel: AppViewModel = hiltViewModel()) {
     val needsAttention = session?.pairing != null || session?.incoming != null
     LaunchedEffect(needsAttention) { if (needsAttention) nav.openTransfer() }
 
-    NavHost(navController = nav, startDestination = Routes.HOME) {
+    // Forward: the new screen slides in a little from the right while fading in; back: reversed.
+    // Short distances and durations keep it calm rather than showy.
+    NavHost(
+        navController = nav,
+        startDestination = Routes.HOME,
+        enterTransition = {
+            slideInHorizontally(tween(FdMotion.MEDIUM, easing = FdMotion.Enter)) { it / 8 } +
+                fadeIn(tween(FdMotion.MEDIUM, easing = FdMotion.Enter))
+        },
+        exitTransition = {
+            slideOutHorizontally(tween(FdMotion.MEDIUM, easing = FdMotion.Enter)) { -it / 16 } +
+                fadeOut(tween(FdMotion.SHORT))
+        },
+        popEnterTransition = {
+            slideInHorizontally(tween(FdMotion.MEDIUM, easing = FdMotion.Enter)) { -it / 16 } +
+                fadeIn(tween(FdMotion.MEDIUM, easing = FdMotion.Enter))
+        },
+        popExitTransition = {
+            slideOutHorizontally(tween(FdMotion.MEDIUM, easing = FdMotion.Enter)) { it / 8 } +
+                fadeOut(tween(FdMotion.SHORT))
+        },
+    ) {
         composable(Routes.HOME) {
             HomeScreen(
                 onSend = { nav.navigate(Routes.SEND) },

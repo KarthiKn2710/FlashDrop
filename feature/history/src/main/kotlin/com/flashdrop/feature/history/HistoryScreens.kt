@@ -34,11 +34,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.flashdrop.core.designsystem.FdCard
+import com.flashdrop.core.designsystem.Haptic
+import com.flashdrop.core.designsystem.rememberHaptics
 import com.flashdrop.core.designsystem.FdColors
 import com.flashdrop.core.designsystem.FdScaffold
 import com.flashdrop.core.designsystem.FileProgressRow
 import com.flashdrop.core.designsystem.SecondaryButton
 import com.flashdrop.core.designsystem.SectionLabel
+import com.flashdrop.core.designsystem.StatRow
 import com.flashdrop.core.designsystem.StatusPill
 import com.flashdrop.core.designsystem.TransferRecordRow
 import com.flashdrop.core.designsystem.statusColor
@@ -83,7 +86,15 @@ fun HistoryScreen(onBack: () -> Unit, onOpen: (String) -> Unit, viewModel: Histo
     FdScaffold(
         title = "History",
         onBack = onBack,
-        actions = { if (!groups.isNullOrEmpty()) TextButton(onClick = viewModel::clear) { Text("Clear") } },
+        actions = {
+            if (!groups.isNullOrEmpty()) {
+                val haptics = rememberHaptics()
+                TextButton(onClick = {
+                    haptics.perform(Haptic.Reject)
+                    viewModel.clear()
+                }) { Text("Clear") }
+            }
+        },
     ) { padding ->
         val list = groups
         if (list != null && list.isEmpty()) {
@@ -98,9 +109,10 @@ fun HistoryScreen(onBack: () -> Unit, onOpen: (String) -> Unit, viewModel: Histo
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             for (group in list.orEmpty()) {
-                item(key = "h-${group.label}") { SectionLabel(group.label, Modifier.padding(top = 10.dp)) }
+                item(key = "h-${group.label}") { SectionLabel(group.label, Modifier.padding(top = 10.dp).animateItem()) }
                 items(group.records, key = { it.sessionId }) { record ->
                     TransferRecordRow(
+                        modifier = Modifier.animateItem(),
                         record = record,
                         time = DateFormat.format("HH:mm", Date(record.createdAt)).toString(),
                         onClick = { onOpen(record.sessionId) },
@@ -143,7 +155,11 @@ fun HistoryDetailScreen(onBack: () -> Unit, onSendAgain: () -> Unit, viewModel: 
         onBack = onBack,
         actions = {
             if (record != null && record.status.isTerminal) {
-                IconButton(onClick = { viewModel.delete(onBack) }) {
+                val haptics = rememberHaptics()
+                IconButton(onClick = {
+                    haptics.perform(Haptic.Reject)
+                    viewModel.delete(onBack)
+                }) {
                     Icon(Icons.Rounded.DeleteOutline, contentDescription = "Delete from history")
                 }
             }
@@ -173,11 +189,13 @@ fun HistoryDetailScreen(onBack: () -> Unit, onSendAgain: () -> Unit, viewModel: 
                             StatusPill(statusLabel(record.status), statusColor(record.status))
                         }
                         Spacer(Modifier.height(14.dp))
-                        Row {
-                            Info("Files", record.totalFiles.toString(), Modifier.weight(1f))
-                            Info("Size", Formatters.bytes(record.totalBytes), Modifier.weight(1f))
-                            Info("Speed", if (record.averageSpeed > 0) Formatters.speed(record.averageSpeed) else "—", Modifier.weight(1f))
-                        }
+                        StatRow(
+                            listOf(
+                                "Files" to record.totalFiles.toString(),
+                                "Size" to Formatters.bytes(record.totalBytes),
+                                "Speed" to if (record.averageSpeed > 0) Formatters.speed(record.averageSpeed) else "—",
+                            ),
+                        )
                         record.message?.let {
                             Spacer(Modifier.height(10.dp))
                             Text(it, style = MaterialTheme.typography.bodySmall, color = FdColors.TextSecondary)
@@ -193,17 +211,10 @@ fun HistoryDetailScreen(onBack: () -> Unit, onSendAgain: () -> Unit, viewModel: 
                     { viewModel.sendAgain(onSendAgain) },
                     Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
                     icon = Icons.Rounded.Refresh,
+                    haptic = Haptic.Confirm,
                 )
             }
         }
     }
 }
 
-@Composable
-private fun Info(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(modifier) {
-        SectionLabel(label)
-        Spacer(Modifier.height(2.dp))
-        Text(value, style = MaterialTheme.typography.titleSmall, maxLines = 1)
-    }
-}

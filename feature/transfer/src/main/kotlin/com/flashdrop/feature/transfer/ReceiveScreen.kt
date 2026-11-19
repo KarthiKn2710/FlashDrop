@@ -38,7 +38,19 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import com.flashdrop.core.designsystem.FdCard
+import com.flashdrop.core.designsystem.FdMotion
+import com.flashdrop.core.designsystem.Haptic
+import com.flashdrop.core.designsystem.HapticOnChange
+import com.flashdrop.core.designsystem.ScanningRadar
+import com.flashdrop.core.designsystem.rememberHaptics
 import com.flashdrop.core.designsystem.FdColors
 import com.flashdrop.core.designsystem.FdScaffold
 import com.flashdrop.core.designsystem.TransferPermissionsEffect
@@ -82,6 +94,9 @@ class ReceiveViewModel @Inject constructor(
 fun ReceiveScreen(onBack: () -> Unit, onSession: () -> Unit, viewModel: ReceiveViewModel = hiltViewModel()) {
     val receiving by viewModel.receiving.collectAsStateWithLifecycle()
     val session by viewModel.session.collectAsStateWithLifecycle()
+    val haptics = rememberHaptics()
+    HapticOnChange(receiving.visible, Haptic.Tick) { it }
+    HapticOnChange(receiving.error, Haptic.Error) { it != null }
 
     TransferPermissionsEffect(onResult = { viewModel.stop(); viewModel.start() })
     LaunchedEffect(Unit) { viewModel.start() }
@@ -101,29 +116,45 @@ fun ReceiveScreen(onBack: () -> Unit, onSession: () -> Unit, viewModel: ReceiveV
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Spacer(Modifier.height(24.dp))
-            Radar(active = receiving.visible)
+            ScanningRadar(active = receiving.visible, icon = Icons.Rounded.Download, color = FdColors.Success)
             Spacer(Modifier.height(8.dp))
 
-            val error = receiving.error
-            when {
-                error != null -> {
-                    Text("Can't receive right now", style = MaterialTheme.typography.titleLarge)
-                    Text(error, style = MaterialTheme.typography.bodyMedium, color = FdColors.Error, textAlign = TextAlign.Center)
-                    SecondaryButton("Try again", { viewModel.stop(); viewModel.start() })
+            val phase = when {
+                receiving.error != null -> 2
+                receiving.visible -> 1
+                else -> 0
+            }
+            AnimatedContent(
+                targetState = phase,
+                transitionSpec = { fadeIn(tween(FdMotion.MEDIUM)) togetherWith fadeOut(tween(FdMotion.SHORT)) },
+                label = "receiveState",
+            ) { current ->
+                Column(
+                    Modifier.fillMaxWidth().semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    when (current) {
+                        2 -> {
+                            Text("Can't receive right now", style = MaterialTheme.typography.titleLarge)
+                            Text(receiving.error.orEmpty(), style = MaterialTheme.typography.bodyMedium, color = FdColors.Error, textAlign = TextAlign.Center)
+                        }
+                        1 -> {
+                            Text("Ready to receive", style = MaterialTheme.typography.titleLarge)
+                            StatusPill("Visible as ${receiving.deviceName}", FdColors.Success)
+                            Text(
+                                "On the sending device, open FlashDrop, tap Send and choose this device. You will be asked before anything is saved.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = FdColors.TextSecondary,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                        else -> Text("Starting…", style = MaterialTheme.typography.titleLarge)
+                    }
                 }
-                receiving.visible -> {
-                    Text("Ready to receive", style = MaterialTheme.typography.titleLarge)
-                    StatusPill("Visible as ${receiving.deviceName}", FdColors.Success)
-                    Text(
-                        "On the sending device, open FlashDrop, tap Send and choose this device. You will be asked before anything is saved.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = FdColors.TextSecondary,
-                        textAlign = TextAlign.Center,
-                    )
-                }
-                else -> {
-                    Text("Starting…", style = MaterialTheme.typography.titleLarge)
-                }
+            }
+            if (receiving.error != null) {
+                SecondaryButton("Try again", { viewModel.stop(); viewModel.start() })
             }
 
             if (receiving.visible && receiving.addresses.isNotEmpty()) {
@@ -143,31 +174,8 @@ fun ReceiveScreen(onBack: () -> Unit, onSession: () -> Unit, viewModel: ReceiveV
             }
 
             if (receiving.visible) {
-                SecondaryButton("Stop receiving", { viewModel.stop(); onBack() }, Modifier.fillMaxWidth())
+                SecondaryButton("Stop receiving", { viewModel.stop(); onBack() }, Modifier.fillMaxWidth(), haptic = Haptic.Reject)
             }
-        }
-    }
-}
-
-@Composable
-private fun Radar(active: Boolean) {
-    val transition = rememberInfiniteTransition(label = "radar")
-    val pulse by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1800), RepeatMode.Restart),
-        label = "pulse",
-    )
-    val color = if (active) FdColors.Success else FdColors.TextSecondary
-    Box(Modifier.size(160.dp), contentAlignment = Alignment.Center) {
-        if (active) {
-            Box(
-                Modifier.size(160.dp).scale(0.5f + pulse * 0.5f).graphicsLayer { alpha = 1f - pulse }
-                    .clip(CircleShape).background(color.copy(alpha = 0.25f)),
-            )
-        }
-        Box(Modifier.size(84.dp).clip(CircleShape).background(color.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
-            Icon(Icons.Rounded.Download, contentDescription = null, tint = color, modifier = Modifier.size(36.dp))
         }
     }
 }

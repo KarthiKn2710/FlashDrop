@@ -56,7 +56,30 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import com.flashdrop.core.designsystem.DeviceAvatar
 import com.flashdrop.core.designsystem.FdCard
+import com.flashdrop.core.designsystem.FdMotion
+import com.flashdrop.core.designsystem.Haptic
+import com.flashdrop.core.designsystem.HapticOnChange
+import com.flashdrop.core.designsystem.OnChange
+import com.flashdrop.core.designsystem.ResultMark
+import com.flashdrop.core.designsystem.rememberHaptics
 import com.flashdrop.core.designsystem.FdColors
 import com.flashdrop.core.designsystem.FdProgressBar
 import com.flashdrop.core.designsystem.FdScaffold
@@ -65,6 +88,7 @@ import com.flashdrop.core.designsystem.IconBadge
 import com.flashdrop.core.designsystem.PrimaryButton
 import com.flashdrop.core.designsystem.SecondaryButton
 import com.flashdrop.core.designsystem.SectionLabel
+import com.flashdrop.core.designsystem.StatRow
 import com.flashdrop.core.designsystem.StatusPill
 import com.flashdrop.core.designsystem.statusColor
 import com.flashdrop.core.designsystem.statusLabel
@@ -132,22 +156,59 @@ fun TransferScreen(onBack: () -> Unit, onDone: () -> Unit, viewModel: TransferVi
         s.direction == TransferDirection.SEND -> "Sending"
         else -> "Receiving"
     }
+    val phase = when {
+        pairing != null -> Phase.Pairing
+        incoming != null -> Phase.Incoming
+        s.status.isTerminal -> Phase.Done
+        else -> Phase.Active
+    }
+    val haptics = rememberHaptics()
+    // Something needs the user's decision: a nudge, even if they were looking elsewhere.
+    HapticOnChange(phase, Haptic.Tick) { it == Phase.Pairing || it == Phase.Incoming }
+    OnChange(s.status) { status ->
+        when {
+            status == TransferStatus.Completed && s.failedFiles == 0 -> haptics.perform(Haptic.Success)
+            status == TransferStatus.Completed || status == TransferStatus.Failed ||
+                status == TransferStatus.Rejected -> haptics.perform(Haptic.Error)
+            status == TransferStatus.Interrupted -> haptics.perform(Haptic.Tick)
+            status == TransferStatus.Paused && !s.pausedLocally -> haptics.perform(Haptic.Tick)
+            else -> Unit
+        }
+    }
+
     FdScaffold(title = title, onBack = onBack) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding).navigationBarsPadding()) {
-            when {
-                pairing != null -> PairingView(pairing, s.direction, viewModel::confirmPairing)
-                incoming != null -> IncomingView(incoming, viewModel::respond)
-                s.status.isTerminal -> CompletionView(s, onDone = { viewModel.done(); onDone() }, onRetry = viewModel::retry)
-                else -> ActiveView(s, viewModel)
+        AnimatedContent(
+            targetState = phase,
+            modifier = Modifier.fillMaxSize().padding(padding).navigationBarsPadding(),
+            transitionSpec = {
+                (fadeIn(tween(FdMotion.MEDIUM, delayMillis = 60)) + scaleIn(tween(FdMotion.MEDIUM, easing = FdMotion.Enter), initialScale = 0.96f)) togetherWith
+                    fadeOut(tween(FdMotion.SHORT))
+            },
+            label = "transferPhase",
+        ) { current ->
+            Box(Modifier.fillMaxSize()) {
+                when (current) {
+                    Phase.Pairing -> pairing?.let { PairingView(it, s.direction, viewModel::confirmPairing) }
+                    Phase.Incoming -> incoming?.let { IncomingView(it, viewModel::respond) }
+                    Phase.Done -> CompletionView(s, onDone = { viewModel.done(); onDone() }, onRetry = viewModel::retry)
+                    Phase.Active -> ActiveView(s, viewModel)
+                }
             }
         }
     }
 }
 
+private enum class Phase { Pairing, Incoming, Active, Done }
+
 @Composable
 private fun PairingView(prompt: PairingPrompt, direction: TransferDirection, onDecision: (Boolean, Boolean) -> Unit) {
     var trust by rememberSaveable { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    val haptics = rememberHaptics()
+    Column(Modifier.fillMaxSize().padding(20.dp)) {
+    Column(
+        Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         Spacer(Modifier.height(16.dp))
         IconBadge(Icons.Rounded.Lock, size = 64)
         Spacer(Modifier.height(20.dp))
@@ -162,9 +223,15 @@ private fun PairingView(prompt: PairingPrompt, direction: TransferDirection, onD
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 SectionLabel("Verification code")
                 Spacer(Modifier.height(8.dp))
+                // Already large: kept at a fixed size so very large font settings cannot push it
+                // off screen. Read digit by digit, so it can be compared by ear too.
+                val fontScale = LocalDensity.current.fontScale
                 Text(
                     prompt.code.chunked(3).joinToString(" "),
-                    fontSize = 44.sp,
+                    modifier = Modifier.semantics {
+                        contentDescription = "Verification code " + prompt.code.toList().joinToString(" ")
+                    },
+                    fontSize = (44f / fontScale.coerceAtLeast(1f)).sp,
                     fontWeight = FontWeight.SemiBold,
                     fontFamily = FontFamily.Monospace,
                     color = FdColors.Accent,
@@ -182,18 +249,31 @@ private fun PairingView(prompt: PairingPrompt, direction: TransferDirection, onD
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(12.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        // The whole row is the touch target and reads as one checkbox.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(MaterialTheme.shapes.medium)
+                .toggleable(value = trust, role = Role.Checkbox) {
+                    haptics.perform(Haptic.Toggle)
+                    trust = it
+                }
+                .padding(vertical = 4.dp),
+        ) {
             Checkbox(
                 checked = trust,
-                onCheckedChange = { trust = it },
+                onCheckedChange = null,
                 colors = CheckboxDefaults.colors(checkedColor = FdColors.Accent, checkmarkColor = FdColors.OnAccent),
+                modifier = Modifier.padding(12.dp),
             )
             Text("Trust this device and skip the code next time", style = MaterialTheme.typography.bodyMedium)
         }
-        Spacer(Modifier.weight(1f))
+    }
+        Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            SecondaryButton("Cancel", { onDecision(false, false) }, Modifier.weight(1f))
-            PrimaryButton("Codes match", { onDecision(true, trust) }, Modifier.weight(1f))
+            SecondaryButton("Cancel", { onDecision(false, false) }, Modifier.weight(1f), haptic = Haptic.Reject)
+            PrimaryButton("Codes match", { onDecision(true, trust) }, Modifier.weight(1f), haptic = Haptic.Confirm)
         }
     }
 }
@@ -201,9 +281,10 @@ private fun PairingView(prompt: PairingPrompt, direction: TransferDirection, onD
 @Composable
 private fun IncomingView(request: IncomingRequest, onDecision: (Boolean) -> Unit) {
     Column(Modifier.fillMaxSize().padding(20.dp)) {
+    Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
         FdCard(Modifier.fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconBadge(Icons.Rounded.PhoneAndroid, size = 48)
+                DeviceAvatar(request.peerName, size = 48.dp)
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(request.peerName, style = MaterialTheme.typography.titleMedium)
@@ -214,11 +295,13 @@ private fun IncomingView(request: IncomingRequest, onDecision: (Boolean) -> Unit
         }
         Spacer(Modifier.height(12.dp))
         FdCard(Modifier.fillMaxWidth()) {
-            Row {
-                Stat("Files", request.fileCount.toString(), Modifier.weight(1f))
-                Stat("Folders", request.folderCount.toString(), Modifier.weight(1f))
-                Stat("Total size", Formatters.bytes(request.totalBytes), Modifier.weight(1f))
-            }
+            StatRow(
+                listOf(
+                    "Files" to request.fileCount.toString(),
+                    "Folders" to request.folderCount.toString(),
+                    "Total size" to Formatters.bytes(request.totalBytes),
+                ),
+            )
             Spacer(Modifier.height(14.dp))
             for (name in request.previewNames) {
                 Text(name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -237,20 +320,12 @@ private fun IncomingView(request: IncomingRequest, onDecision: (Boolean) -> Unit
                 color = FdColors.TextSecondary,
             )
         }
-        Spacer(Modifier.weight(1f))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            SecondaryButton("Decline", { onDecision(false) }, Modifier.weight(1f))
-            PrimaryButton("Accept", { onDecision(true) }, Modifier.weight(1f))
-        }
     }
-}
-
-@Composable
-private fun Stat(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(modifier) {
-        SectionLabel(label)
-        Spacer(Modifier.height(2.dp))
-        Text(value, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            SecondaryButton("Decline", { onDecision(false) }, Modifier.weight(1f), haptic = Haptic.Reject)
+            PrimaryButton("Accept", { onDecision(true) }, Modifier.weight(1f), haptic = Haptic.Confirm)
+        }
     }
 }
 
@@ -276,7 +351,7 @@ private fun ActiveView(s: TransferSnapshot, viewModel: TransferViewModel) {
                             )
                             Text("Encrypted · " + com.flashdrop.core.designsystem.transportLabel(s.transport), style = MaterialTheme.typography.bodySmall, color = FdColors.TextSecondary)
                         }
-                        StatusPill(statusLabel(s.status), statusColor(s.status))
+                        StatusPill(statusLabel(s.status), statusColor(s.status), announce = true)
                     }
                     Spacer(Modifier.height(20.dp))
                     if (moving) {
@@ -290,12 +365,14 @@ private fun ActiveView(s: TransferSnapshot, viewModel: TransferViewModel) {
                             )
                         }
                         Spacer(Modifier.height(10.dp))
-                        FdProgressBar(s.progress, color = statusColor(s.status))
+                        FdProgressBar(s.progress, color = statusColor(s.status), label = "Overall progress")
                         Spacer(Modifier.height(14.dp))
-                        Row {
-                            Stat("Speed", if (s.status == TransferStatus.Transferring) Formatters.speed(s.speedBytesPerSecond) else "—", Modifier.weight(1f))
-                            Stat("Time left", s.remainingSeconds?.let(Formatters::duration) ?: "—", Modifier.weight(1f))
-                        }
+                        StatRow(
+                            listOf(
+                                "Speed" to if (s.status == TransferStatus.Transferring) Formatters.speed(s.speedBytesPerSecond) else "—",
+                                "Time left" to (s.remainingSeconds?.let(Formatters::duration) ?: "—"),
+                            ),
+                        )
                     } else {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.5.dp, color = FdColors.Accent)
@@ -322,14 +399,14 @@ private fun ActiveView(s: TransferSnapshot, viewModel: TransferViewModel) {
                 item { Text("Current: ${s.currentFile}", style = MaterialTheme.typography.bodySmall, color = FdColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
             }
             item { SectionLabel("Files", Modifier.padding(top = 4.dp)) }
-            items(s.files, key = { it.fileId }) { file -> FileProgressRow(file) }
+            items(s.files, key = { it.fileId }) { file -> FileProgressRow(file, Modifier.animateItem()) }
         }
         Row(Modifier.padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            SecondaryButton("Cancel", viewModel::cancel, Modifier.weight(1f), icon = Icons.Rounded.Close, color = FdColors.Error)
+            SecondaryButton("Cancel", viewModel::cancel, Modifier.weight(1f), icon = Icons.Rounded.Close, color = FdColors.Error, haptic = Haptic.Reject)
             if (s.canResume) {
-                PrimaryButton("Resume", viewModel::resume, Modifier.weight(1f), icon = Icons.Rounded.PlayArrow)
+                PrimaryButton("Resume", viewModel::resume, Modifier.weight(1f), icon = Icons.Rounded.PlayArrow, haptic = Haptic.Toggle)
             } else {
-                PrimaryButton("Pause", viewModel::pause, Modifier.weight(1f), enabled = s.canPause, icon = Icons.Rounded.Pause)
+                PrimaryButton("Pause", viewModel::pause, Modifier.weight(1f), enabled = s.canPause, icon = Icons.Rounded.Pause, haptic = Haptic.Toggle)
             }
         }
     }
@@ -353,8 +430,17 @@ private fun CompletionView(s: TransferSnapshot, onDone: () -> Unit, onRetry: () 
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                Column(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    IconBadge(if (success && !partial) Icons.Rounded.CheckCircle else Icons.Rounded.ErrorOutline, tint = color, size = 72)
+                Column(
+                    Modifier.fillMaxWidth().padding(vertical = 16.dp).semantics(mergeDescendants = true) {
+                        liveRegion = LiveRegionMode.Polite
+                    },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (s.status == TransferStatus.Cancelled) {
+                        IconBadge(Icons.Rounded.ErrorOutline, tint = color, size = 72)
+                    } else {
+                        ResultMark(success = success && !partial)
+                    }
                     Spacer(Modifier.height(16.dp))
                     Text(
                         when {
@@ -374,11 +460,13 @@ private fun CompletionView(s: TransferSnapshot, onDone: () -> Unit, onRetry: () 
             }
             item {
                 FdCard(Modifier.fillMaxWidth()) {
-                    Row {
-                        Stat("Transferred", Formatters.bytes(s.transferredBytes), Modifier.weight(1f))
-                        Stat("Average speed", if (s.averageSpeed > 0) Formatters.speed(s.averageSpeed) else "—", Modifier.weight(1f))
-                        Stat("Time", Formatters.duration(s.elapsedMillis / 1000), Modifier.weight(1f))
-                    }
+                    StatRow(
+                        listOf(
+                            "Transferred" to Formatters.bytes(s.transferredBytes),
+                            "Average speed" to if (s.averageSpeed > 0) Formatters.speed(s.averageSpeed) else "—",
+                            "Time" to Formatters.duration(s.elapsedMillis / 1000),
+                        ),
+                    )
                     if (success) {
                         Spacer(Modifier.height(10.dp))
                         Text(
@@ -404,7 +492,7 @@ private fun CompletionView(s: TransferSnapshot, onDone: () -> Unit, onRetry: () 
                 )
             }
             if (s.canRetry) {
-                SecondaryButton("Reconnect and resume", onRetry, Modifier.fillMaxWidth(), icon = Icons.Rounded.Refresh)
+                SecondaryButton("Reconnect and resume", onRetry, Modifier.fillMaxWidth(), icon = Icons.Rounded.Refresh, haptic = Haptic.Confirm)
             }
             PrimaryButton("Done", onDone, Modifier.fillMaxWidth())
         }

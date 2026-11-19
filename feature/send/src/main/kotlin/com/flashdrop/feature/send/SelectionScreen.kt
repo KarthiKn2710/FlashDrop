@@ -51,7 +51,12 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import androidx.compose.ui.semantics.semantics
 import com.flashdrop.core.designsystem.FdColors
+import com.flashdrop.core.designsystem.FileThumbnail
+import com.flashdrop.core.designsystem.Haptic
+import com.flashdrop.core.designsystem.OnChange
+import com.flashdrop.core.designsystem.rememberHaptics
 import com.flashdrop.core.designsystem.FdScaffold
 import com.flashdrop.core.designsystem.PrimaryButton
 import com.flashdrop.core.designsystem.SecondaryButton
@@ -113,6 +118,9 @@ class SelectionViewModel @Inject constructor(
 @Composable
 fun SelectionScreen(onBack: () -> Unit, onContinue: () -> Unit, viewModel: SelectionViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val haptics = rememberHaptics()
+    // A tick when picked files finish loading into the list.
+    OnChange(state.totalCount) { count -> if (count > 0 && !state.loading) haptics.perform(Haptic.Tick) }
 
     // The system picker is the Storage Access Framework: no broad storage permission is needed.
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -126,7 +134,12 @@ fun SelectionScreen(onBack: () -> Unit, onContinue: () -> Unit, viewModel: Selec
         title = "Select files",
         onBack = onBack,
         actions = {
-            if (state.totalCount > 0) TextButton(onClick = viewModel::clear) { Text("Clear") }
+            if (state.totalCount > 0) {
+                TextButton(onClick = {
+                    haptics.perform(Haptic.Reject)
+                    viewModel.clear()
+                }) { Text("Clear") }
+            }
         },
         bottomBar = {
             Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
@@ -139,7 +152,7 @@ fun SelectionScreen(onBack: () -> Unit, onContinue: () -> Unit, viewModel: Selec
                         )
                         Text(Formatters.bytes(state.totalBytes), style = MaterialTheme.typography.bodySmall, color = FdColors.TextSecondary)
                     }
-                    PrimaryButton("Continue", onContinue, enabled = state.totalCount > 0 && !state.loading)
+                    PrimaryButton("Continue", onContinue, enabled = state.totalCount > 0 && !state.loading, haptic = Haptic.Confirm)
                 }
             }
         },
@@ -164,7 +177,12 @@ fun SelectionScreen(onBack: () -> Unit, onContinue: () -> Unit, viewModel: Selec
             } else {
                 Filters(state, viewModel)
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
-                    items(state.visible, key = { it.uri }) { item -> SelectedRow(item) { viewModel.remove(item.uri) } }
+                    items(state.visible, key = { it.uri }) { item ->
+                        SelectedRow(item, Modifier.animateItem()) {
+                            haptics.perform(Haptic.Reject)
+                            viewModel.remove(item.uri)
+                        }
+                    }
                     if (state.visible.isEmpty()) {
                         item {
                             Text(
@@ -200,6 +218,7 @@ private fun EmptySelection() {
 @Composable
 private fun Filters(state: SelectionUiState, viewModel: SelectionViewModel) {
     var sortOpen by remember { mutableStateOf(false) }
+    val haptics = rememberHaptics()
     Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
         OutlinedTextField(
             value = state.query,
@@ -217,7 +236,10 @@ private fun Filters(state: SelectionUiState, viewModel: SelectionViewModel) {
             ),
         )
         Box {
-            IconButton(onClick = { sortOpen = true }) {
+            IconButton(onClick = {
+                haptics.perform(Haptic.Tap)
+                sortOpen = true
+            }) {
                 Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "Sort", tint = FdColors.TextSecondary)
             }
             DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }, containerColor = FdColors.Elevated) {
@@ -225,6 +247,7 @@ private fun Filters(state: SelectionUiState, viewModel: SelectionViewModel) {
                     DropdownMenuItem(
                         text = { Text(label, color = if (order == state.sort) FdColors.Accent else FdColors.TextPrimary) },
                         onClick = {
+                            haptics.perform(Haptic.Toggle)
                             viewModel.setSort(order)
                             sortOpen = false
                         },
@@ -240,7 +263,10 @@ private fun Filters(state: SelectionUiState, viewModel: SelectionViewModel) {
         for ((category, label) in CATEGORIES) {
             FilterChip(
                 selected = state.category == category,
-                onClick = { viewModel.setCategory(category) },
+                onClick = {
+                    if (state.category != category) haptics.perform(Haptic.Toggle)
+                    viewModel.setCategory(category)
+                },
                 label = { Text(label) },
                 colors = FilterChipDefaults.filterChipColors(
                     containerColor = FdColors.Surface,
@@ -269,11 +295,11 @@ private val CATEGORIES = listOf(
 )
 
 @Composable
-private fun SelectedRow(item: SelectedItem, onRemove: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(fileIcon(item.name, item.isDirectory), contentDescription = null, tint = FdColors.TextSecondary, modifier = Modifier.size(24.dp))
+private fun SelectedRow(item: SelectedItem, modifier: Modifier = Modifier, onRemove: () -> Unit) {
+    Row(modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        FileThumbnail(item.uri, item.name, item.mimeType, item.isDirectory)
         Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f).semantics(mergeDescendants = true) {}) {
             Text(item.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val folder = item.relativePath.substringBeforeLast('/', "")
             Text(

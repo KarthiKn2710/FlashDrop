@@ -1,9 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A lightning bolt kept inside the 66 dp safe zone, with a soft drop shadow for depth. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <group
+        android:translateX="1.6"
+        android:translateY="2.6">
+        <path
+            android:fillColor="#592E1065"
+            android:strokeColor="#592E1065"
+            android:strokeWidth="3"
+            android:strokeLineJoin="round"
+            android:pathData="M61,30 L40,57 L52.5,57 L47,79 L69,50 L56.5,50 Z" />
+    </group>
     <path
-        android:fillColor="#A78BFA"
-        android:pathData="M58,28L36,58H52L49,80L73,49H57Z" />
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="3"
+        android:strokeLineJoin="round"
+        android:pathData="M61,30 L40,57 L52.5,57 L47,79 L69,50 L56.5,50 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54"
+                android:startY="30"
+                android:endX="54"
+                android:endY="79">
+                <item android:offset="0" android:color="#FFFFFFFF" />
+                <item android:offset="1" android:color="#FFE9E2FF" />
+            </gradient>
+        </aapt:attr>
+    </path>
 </vector>

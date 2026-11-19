@@ -3,6 +3,11 @@ package com.flashdrop.feature.settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import com.flashdrop.core.designsystem.Haptic
+import com.flashdrop.core.designsystem.rememberHaptics
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -102,6 +107,7 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
     val state by viewModel.state.collectAsStateWithLifecycle()
     val settings = state.settings
     var editingName by rememberSaveable { mutableStateOf(false) }
+    val haptics = rememberHaptics()
     val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) viewModel.setSaveLocation(uri.toString())
     }
@@ -167,7 +173,10 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
                                 Text(device.displayName, style = MaterialTheme.typography.titleSmall)
                                 Text("Key ${device.fingerprint}", style = MaterialTheme.typography.bodySmall, color = FdColors.TextSecondary)
                             }
-                            IconButton(onClick = { viewModel.removeTrusted(device.deviceId) }) {
+                            IconButton(onClick = {
+                                haptics.perform(Haptic.Reject)
+                                viewModel.removeTrusted(device.deviceId)
+                            }) {
                                 Icon(Icons.Rounded.Close, contentDescription = "Remove ${device.displayName}", tint = FdColors.TextSecondary)
                             }
                         }
@@ -202,9 +211,17 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
             onDismissRequest = { editingName = false },
             containerColor = FdColors.Elevated,
             title = { Text("Device name") },
-            text = { OutlinedTextField(value = name, onValueChange = { name = it.take(40) }, singleLine = true) },
+            text = {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(40) },
+                    singleLine = true,
+                    label = { Text("Shown to nearby devices") },
+                )
+            },
             confirmButton = {
                 TextButton(enabled = name.isNotBlank(), onClick = {
+                    haptics.perform(Haptic.Confirm)
                     viewModel.setDeviceName(name)
                     editingName = false
                 }) { Text("Save") }
@@ -226,7 +243,17 @@ private fun Divider() = HorizontalDivider(color = FdColors.Border)
 
 @Composable
 private fun ValueRow(title: String, value: String, hint: String?, onClick: () -> Unit) {
-    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp)) {
+    val haptics = rememberHaptics()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) {}
+            .clickable(role = Role.Button, onClickLabel = "Change $title") {
+                haptics.perform(Haptic.Tap)
+                onClick()
+            }
+            .padding(16.dp),
+    ) {
         Text(title, style = MaterialTheme.typography.bodySmall, color = FdColors.TextSecondary)
         Text(value, style = MaterialTheme.typography.titleSmall)
         if (hint != null) Text(hint, style = MaterialTheme.typography.bodySmall, color = FdColors.TextSecondary)
@@ -235,7 +262,18 @@ private fun ValueRow(title: String, value: String, hint: String?, onClick: () ->
 
 @Composable
 private fun SwitchRow(title: String, description: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+    val haptics = rememberHaptics()
+    // The whole row is one switch for touch and for screen readers.
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .toggleable(value = checked, role = Role.Switch) {
+                haptics.perform(Haptic.Toggle)
+                onChange(it)
+            }
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleSmall)
             Text(description, style = MaterialTheme.typography.bodySmall, color = FdColors.TextSecondary)
@@ -243,7 +281,7 @@ private fun SwitchRow(title: String, description: String, checked: Boolean, onCh
         Spacer(Modifier.width(12.dp))
         Switch(
             checked = checked,
-            onCheckedChange = onChange,
+            onCheckedChange = null,
             colors = SwitchDefaults.colors(
                 checkedTrackColor = FdColors.Accent,
                 checkedThumbColor = FdColors.OnAccent,

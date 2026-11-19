@@ -38,7 +38,14 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import com.flashdrop.core.designsystem.FdCard
+import com.flashdrop.core.designsystem.Haptic
+import com.flashdrop.core.designsystem.HapticOnChange
+import com.flashdrop.core.designsystem.OnChange
+import com.flashdrop.core.designsystem.rememberHaptics
+import com.flashdrop.core.model.TransferStatus
 import com.flashdrop.core.designsystem.FdColors
 import com.flashdrop.core.designsystem.FdProgressBar
 import com.flashdrop.core.designsystem.IconBadge
@@ -87,6 +94,17 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val haptics = rememberHaptics()
+
+    // A nudge when this device becomes visible or a transfer finishes while Home is open.
+    HapticOnChange(state.receiving.visible, Haptic.Tick) { it }
+    OnChange(state.session?.status) { status ->
+        when (status) {
+            TransferStatus.Completed -> haptics.perform(Haptic.Success)
+            TransferStatus.Failed -> haptics.perform(Haptic.Error)
+            else -> Unit
+        }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().statusBarsPadding(),
@@ -97,11 +115,21 @@ fun HomeScreen(
             Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconBadge(Icons.Rounded.Bolt, size = 36)
                 Spacer(Modifier.width(10.dp))
-                Text("FlashDrop", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
-                IconButton(onClick = onHistory) {
+                Text(
+                    "FlashDrop",
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.weight(1f).semantics { heading() },
+                )
+                IconButton(onClick = {
+                    haptics.perform(Haptic.Tap)
+                    onHistory()
+                }) {
                     Icon(Icons.Rounded.History, contentDescription = "History", tint = FdColors.TextSecondary)
                 }
-                IconButton(onClick = onSettings) {
+                IconButton(onClick = {
+                    haptics.perform(Haptic.Tap)
+                    onSettings()
+                }) {
                     Icon(Icons.Rounded.Settings, contentDescription = "Settings", tint = FdColors.TextSecondary)
                 }
             }
@@ -121,26 +149,31 @@ fun HomeScreen(
 
         val session = state.session
         if (session != null) {
-            item { ActiveTransferCard(session, onOpenTransfer) }
+            item(key = "session") { ActiveTransferCard(session, onOpenTransfer, Modifier.animateItem()) }
         }
 
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        item(key = "actions") {
+            Row(Modifier.animateItem(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 ActionCard("Send", "Pick files or folders", Icons.Rounded.Upload, FdColors.Accent, onSend, Modifier.weight(1f))
                 ActionCard("Receive", "Become visible nearby", Icons.Rounded.Download, FdColors.Success, onReceive, Modifier.weight(1f))
             }
         }
 
-        item {
-            Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        item(key = "recent-header") {
+            Row(Modifier.fillMaxWidth().padding(top = 12.dp).animateItem(), verticalAlignment = Alignment.CenterVertically) {
                 SectionLabel("Recent transfers", Modifier.weight(1f))
-                if (state.recent.isNotEmpty()) TextButton(onClick = onHistory) { Text("See all") }
+                if (state.recent.isNotEmpty()) {
+                    TextButton(onClick = {
+                        haptics.perform(Haptic.Tap)
+                        onHistory()
+                    }) { Text("See all") }
+                }
             }
         }
 
         if (state.recent.isEmpty()) {
-            item {
-                FdCard(Modifier.fillMaxWidth()) {
+            item(key = "empty") {
+                FdCard(Modifier.fillMaxWidth().animateItem()) {
                     Text("Nothing here yet", style = MaterialTheme.typography.titleSmall)
                     Spacer(Modifier.height(4.dp))
                     Text(
@@ -153,6 +186,7 @@ fun HomeScreen(
         } else {
             items(state.recent, key = { it.sessionId }) { record ->
                 TransferRecordRow(
+                    modifier = Modifier.animateItem(),
                     record = record,
                     time = DateUtils.getRelativeTimeSpanString(record.createdAt, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS).toString(),
                     onClick = { onOpenRecord(record.sessionId) },
@@ -164,7 +198,7 @@ fun HomeScreen(
 
 @Composable
 private fun ActionCard(title: String, subtitle: String, icon: ImageVector, tint: Color, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    FdCard(modifier = modifier, onClick = onClick, contentPadding = PaddingValues(18.dp)) {
+    FdCard(modifier = modifier, onClick = onClick, onClickLabel = title, contentPadding = PaddingValues(18.dp)) {
         IconBadge(icon, tint = tint, size = 48)
         Spacer(Modifier.height(28.dp))
         Text(title, style = MaterialTheme.typography.titleLarge)
@@ -174,8 +208,8 @@ private fun ActionCard(title: String, subtitle: String, icon: ImageVector, tint:
 }
 
 @Composable
-private fun ActiveTransferCard(session: TransferSnapshot, onClick: () -> Unit) {
-    FdCard(Modifier.fillMaxWidth(), onClick = onClick, color = FdColors.Elevated) {
+private fun ActiveTransferCard(session: TransferSnapshot, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    FdCard(modifier.fillMaxWidth(), onClick = onClick, onClickLabel = "Open transfer", color = FdColors.Elevated) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
@@ -194,7 +228,7 @@ private fun ActiveTransferCard(session: TransferSnapshot, onClick: () -> Unit) {
         }
         if (!session.status.isTerminal) {
             Spacer(Modifier.height(12.dp))
-            Box(Modifier.fillMaxWidth()) { FdProgressBar(session.progress) }
+            Box(Modifier.fillMaxWidth()) { FdProgressBar(session.progress, label = "Transfer progress") }
         }
     }
 }

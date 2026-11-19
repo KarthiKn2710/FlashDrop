@@ -26,6 +26,7 @@ object Formatters {
         return when {
             h > 0 -> "${h}h ${m}m"
             m > 0 -> "${m}m ${sec}s"
+            sec == 0L -> "<1s"
             else -> "${sec}s"
         }
     }

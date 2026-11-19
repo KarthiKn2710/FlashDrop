@@ -28,7 +28,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import com.flashdrop.core.model.FileStatus
 import com.flashdrop.core.model.FileTransferState
 import com.flashdrop.core.model.Formatters
@@ -77,7 +80,14 @@ fun fileIcon(name: String, isDirectory: Boolean = false): ImageVector {
 @Composable
 fun TransferRecordRow(record: TransferRecord, time: String, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
     val sent = record.direction == TransferDirection.SEND
-    FdCard(modifier = modifier.fillMaxWidth(), onClick = onClick, contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
+    // With large text there is no room for the status beside the name, so it moves below.
+    val largeText = LocalDensity.current.fontScale >= 1.3f
+    FdCard(
+        modifier = modifier.fillMaxWidth(),
+        onClick = onClick,
+        onClickLabel = "Open details",
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconBadge(
                 icon = if (sent) Icons.Rounded.ArrowUpward else Icons.Rounded.ArrowDownward,
@@ -88,7 +98,7 @@ fun TransferRecordRow(record: TransferRecord, time: String, modifier: Modifier =
                 Text(
                     record.peerName,
                     style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(2.dp))
@@ -96,19 +106,37 @@ fun TransferRecordRow(record: TransferRecord, time: String, modifier: Modifier =
                     "${record.totalFiles} ${if (record.totalFiles == 1) "file" else "files"} · ${Formatters.bytes(record.totalBytes)} · $time",
                     style = MaterialTheme.typography.bodySmall,
                     color = FdColors.TextSecondary,
-                    maxLines = 1,
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (largeText) {
+                    Spacer(Modifier.height(6.dp))
+                    StatusPill(statusLabel(record.status), statusColor(record.status))
+                }
             }
-            Spacer(Modifier.width(8.dp))
-            StatusPill(statusLabel(record.status), statusColor(record.status))
+            if (!largeText) {
+                Spacer(Modifier.width(8.dp))
+                StatusPill(statusLabel(record.status), statusColor(record.status))
+            }
         }
     }
 }
 
 @Composable
 fun FileProgressRow(file: FileTransferState, modifier: Modifier = Modifier) {
-    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    // Read as one item, e.g. "photos/a.jpg, 45 percent" or "photos/a.jpg, 2.1 MB, verified".
+    val spoken = when (file.status) {
+        FileStatus.Transferring ->
+            if (file.size > 0) "${file.relativePath}, ${(file.completedBytes * 100 / file.size)} percent" else file.relativePath
+        FileStatus.Pending -> "${file.relativePath}, waiting"
+        FileStatus.Verifying -> "${file.relativePath}, verifying"
+        FileStatus.Completed -> "${file.relativePath}, ${Formatters.bytes(file.size)}, verified"
+        FileStatus.Failed -> "${file.relativePath}, failed"
+    }
+    Row(
+        modifier.fillMaxWidth().clearAndSetSemantics { contentDescription = spoken },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Icon(fileIcon(file.name, file.isDirectory), contentDescription = null, tint = FdColors.TextSecondary, modifier = Modifier.size(22.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {

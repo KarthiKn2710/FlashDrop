@@ -49,7 +49,23 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.core.content.ContextCompat
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -65,10 +81,22 @@ fun FdScaffold(
         containerColor = FdColors.Background,
         topBar = {
             TopAppBar(
-                title = { Text(title, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.semantics { heading() },
+                    )
+                },
                 navigationIcon = {
                     if (onBack != null) {
-                        IconButton(onClick = onBack) {
+                        val haptics = rememberHaptics()
+                        IconButton(onClick = {
+                            haptics.perform(Haptic.Tap)
+                            onBack()
+                        }) {
                             Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
                         }
                     }
@@ -87,20 +115,45 @@ fun FdScaffold(
     )
 }
 
-/** Compact card with a subtle border; the basic surface of every screen. */
+/**
+ * Compact card with a subtle border; the basic surface of every screen. A clickable card gives
+ * a light tap, shrinks a little while pressed, and reads as one button to screen readers.
+ */
 @Composable
 fun FdCard(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
+    onClickLabel: String? = null,
+    /** Feedback on press; null when the click handler plays its own (e.g. a confirm). */
+    haptic: Haptic? = Haptic.Tap,
     color: Color = FdColors.Surface,
     contentPadding: PaddingValues = PaddingValues(16.dp),
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val shape = MaterialTheme.shapes.large
+    val interaction = remember { MutableInteractionSource() }
+    val haptics = rememberHaptics()
     Surface(
         modifier = modifier
+            .then(if (onClick != null) Modifier.pressScale(interaction) else Modifier)
             .clip(shape)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+            .then(
+                if (onClick != null) {
+                    Modifier
+                        .semantics(mergeDescendants = true) {}
+                        .clickable(
+                            interactionSource = interaction,
+                            indication = LocalIndication.current,
+                            role = Role.Button,
+                            onClickLabel = onClickLabel,
+                        ) {
+                            haptic?.let(haptics::perform)
+                            onClick()
+                        }
+                } else {
+                    Modifier
+                },
+            ),
         color = color,
         shape = shape,
         border = BorderStroke(1.dp, FdColors.Border),
@@ -116,11 +169,18 @@ fun PrimaryButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     icon: ImageVector? = null,
+    haptic: Haptic = Haptic.Tap,
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val haptics = rememberHaptics()
     Button(
-        onClick = onClick,
+        onClick = {
+            haptics.perform(haptic)
+            onClick()
+        },
         enabled = enabled,
-        modifier = modifier.heightIn(min = 52.dp),
+        interactionSource = interaction,
+        modifier = modifier.heightIn(min = 52.dp).pressScale(interaction),
         shape = MaterialTheme.shapes.medium,
         colors = ButtonDefaults.buttonColors(
             containerColor = FdColors.Accent,
@@ -145,11 +205,18 @@ fun SecondaryButton(
     enabled: Boolean = true,
     icon: ImageVector? = null,
     color: Color = FdColors.TextPrimary,
+    haptic: Haptic = Haptic.Tap,
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val haptics = rememberHaptics()
     OutlinedButton(
-        onClick = onClick,
+        onClick = {
+            haptics.perform(haptic)
+            onClick()
+        },
         enabled = enabled,
-        modifier = modifier.heightIn(min = 52.dp),
+        interactionSource = interaction,
+        modifier = modifier.heightIn(min = 52.dp).pressScale(interaction),
         shape = MaterialTheme.shapes.medium,
         border = BorderStroke(1.dp, FdColors.Border),
         colors = ButtonDefaults.outlinedButtonColors(contentColor = color),
@@ -166,39 +233,76 @@ fun SecondaryButton(
 fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     Text(
         text.uppercase(),
-        modifier = modifier,
+        modifier = modifier.semantics { heading() },
         style = MaterialTheme.typography.labelSmall,
         color = FdColors.TextSecondary,
     )
 }
 
+/**
+ * A small coloured status label. Colour changes are animated; with [announce], screen readers
+ * read out each new status (use it only where the status changes rarely).
+ */
 @Composable
-fun StatusPill(text: String, color: Color, modifier: Modifier = Modifier) {
+fun StatusPill(text: String, color: Color, modifier: Modifier = Modifier, announce: Boolean = false) {
+    val animated by animateColorAsState(color, tween(FdMotion.MEDIUM), label = "pillColor")
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(50))
-            .background(color.copy(alpha = 0.14f))
-            .padding(horizontal = 10.dp, vertical = 4.dp),
+            .background(animated.copy(alpha = 0.14f))
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+            .semantics(mergeDescendants = true) { if (announce) liveRegion = LiveRegionMode.Polite },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Box(Modifier.size(6.dp).clip(CircleShape).background(color))
-        Text(text, style = MaterialTheme.typography.labelSmall, color = color)
+        Box(Modifier.size(6.dp).clip(CircleShape).background(animated))
+        Text(text, style = MaterialTheme.typography.labelSmall, color = animated)
     }
 }
 
+/**
+ * Progress arrives a few times a second; the bar glides between updates instead of jumping.
+ * [label] names it for screen readers ("Overall progress").
+ */
 @Composable
-fun FdProgressBar(progress: Float, modifier: Modifier = Modifier, color: Color = FdColors.Accent) {
+fun FdProgressBar(progress: Float, modifier: Modifier = Modifier, color: Color = FdColors.Accent, label: String? = null) {
+    val animated by animateFloatAsState(progress.coerceIn(0f, 1f), tween(220, easing = LinearEasing), label = "progress")
+    val tint by animateColorAsState(color, tween(FdMotion.MEDIUM), label = "progressColor")
     LinearProgressIndicator(
-        progress = { progress.coerceIn(0f, 1f) },
-        modifier = modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
-        color = color,
+        progress = { animated },
+        modifier = modifier
+            .fillMaxWidth()
+            .height(6.dp)
+            .clip(RoundedCornerShape(50))
+            .then(if (label != null) Modifier.semantics { contentDescription = label } else Modifier),
+        color = tint,
         trackColor = FdColors.Elevated,
         strokeCap = StrokeCap.Round,
         gapSize = 0.dp,
         drawStopIndicator = {},
     )
 }
+
+/**
+ * A device's initial on a colour picked from its name, so the same device always looks the same.
+ * The colour carries no meaning (the name is unauthenticated); it only helps tell devices apart.
+ */
+@Composable
+fun DeviceAvatar(name: String, modifier: Modifier = Modifier, size: Dp = 44.dp) {
+    val color = AVATAR_COLORS[(name.hashCode() and Int.MAX_VALUE) % AVATAR_COLORS.size]
+    val initial = name.trim().firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()?.toString() ?: "?"
+    Box(
+        modifier.size(size).clip(CircleShape).background(color.copy(alpha = 0.18f)).clearAndSetSemantics {},
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(initial, color = color, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+private val AVATAR_COLORS = listOf(
+    Color(0xFFA78BFA), Color(0xFF5EEAD4), Color(0xFFFBBF24),
+    Color(0xFFF9A8D4), Color(0xFF7DD3FC), Color(0xFFBEF264),
+)
 
 /** Round tinted container for a leading icon. */
 @Composable
