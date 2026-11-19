@@ -11,4 +11,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(project(":connectivity:api"))
     implementation(project(":connectivity:tls"))
+    implementation(libs.androidx.core.ktx)
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

@@ -100,6 +100,14 @@ class TransferManager @Inject constructor(
     @Volatile private var active: ActiveSession? = null
     private var listenJob: Job? = null
     private var stopWhenIdle = false
+
+    /**
+     * Random id advertised while receiving. It changes every time the app starts, so nothing
+     * permanent is broadcast, but stays the same while the app runs: a new name on every visit
+     * to Receive left stale entries in other phones' discovery caches, and each one slowed down
+     * their search.
+     */
+    private val advertisedId = Hashing.hex(Hashing.randomBytes(6))
     private val provisional = AtomicInteger()
 
     init {
@@ -146,8 +154,7 @@ class TransferManager @Inject constructor(
 
     private suspend fun listen() {
         val name = settings.current().deviceName
-        // A fresh random id per receive session: nothing permanent is ever advertised.
-        val advertisement = Advertisement(Hashing.hex(Hashing.randomBytes(6)), name)
+        val advertisement = Advertisement(advertisedId, name)
         _receiving.value = ReceiveState(deviceName = name)
         try {
             val available = transports.filter { it.isAvailable() }

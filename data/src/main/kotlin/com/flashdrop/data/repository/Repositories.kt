@@ -36,7 +36,11 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -53,18 +57,44 @@ class DiscoveryRepositoryImpl @Inject constructor(
 ) : DiscoveryRepository {
 
     override fun devices(): Flow<List<RemoteDevice>> {
-        val flows = transports.filter { it.isAvailable() }
-            .sortedBy { it.capabilities().priority }
-            .map { transport -> transport.discover().catch { emit(emptyList()) } }
-        if (flows.isEmpty()) return flowOf(emptyList())
-        // When several transports reach the same peer, the preferred (first) one wins.
-        return combine(flows) { lists -> lists.flatMap { it }.distinctBy { it.id } }
+        val available = transports.filter { it.isAvailable() }.sortedBy { it.capabilities().priority }
+        if (available.isEmpty()) return flowOf(emptyList())
+        val (network, direct) = available.partition { it.capabilities().needsSharedNetwork }
+        if (network.isEmpty() || direct.isEmpty()) return merged(available)
+
+        // Searching for Wi-Fi Direct peers takes the phone's single Wi-Fi radio off its network
+        // for moments at a time, which can lose the local network's discovery replies. Both
+        // devices are usually on the same network, so that search gets a head start: Wi-Fi Direct
+        // is searched after 4 s if nothing was found, or 10 s after something was (so devices
+        // reachable only that way still show up while the list stays open).
+        return channelFlow {
+            val onNetwork = MutableStateFlow<List<RemoteDevice>>(emptyList())
+            val viaDirect = MutableStateFlow<List<RemoteDevice>>(emptyList())
+            launch { merged(network).collect { onNetwork.value = it } }
+            launch {
+                val foundOnNetwork = withTimeoutOrNull(DIRECT_HEAD_START_MS) { onNetwork.first { it.isNotEmpty() } } != null
+                if (foundOnNetwork) delay(DIRECT_LATE_START_MS)
+                merged(direct).collect { viaDirect.value = it }
+            }
+            // When several transports reach the same peer, the preferred (first) one wins.
+            combine(onNetwork, viaDirect) { a, b -> (a + b).distinctBy { it.id } }.collect { send(it) }
+        }
     }
+
+    private fun merged(list: List<TransferTransport>): Flow<List<RemoteDevice>> =
+        combine(list.map { transport -> transport.discover().catch { emit(emptyList()) } }) { lists ->
+            lists.flatMap { it }.distinctBy { it.id }
+        }
 
     override fun manualDevice(host: String, port: Int): RemoteDevice =
         RemoteDevice("manual-$host-$port", host, TransportType.LAN, host, port)
 
     override fun isAnyTransportAvailable(): Boolean = transports.any { it.isAvailable() }
+
+    private companion object {
+        const val DIRECT_HEAD_START_MS = 4_000L
+        const val DIRECT_LATE_START_MS = 10_000L
+    }
 }
 
 @Singleton

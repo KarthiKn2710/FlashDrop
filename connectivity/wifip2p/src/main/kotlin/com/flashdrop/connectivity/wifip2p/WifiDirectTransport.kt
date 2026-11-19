@@ -210,6 +210,9 @@ class WifiDirectTransport @Inject constructor(
             val serviceFailure = await { manager.addLocalService(channel, service, it) }
             if (serviceFailure != null) Log.w(TAG, "Could not advertise over Wi-Fi Direct: ${reason(serviceFailure)}")
 
+            // Let the local-network announcements go out first: creating a group can briefly
+            // move the Wi-Fi radio, and a lost announcement delays senders on that network.
+            delay(GROUP_START_DELAY_MS)
             // Own the group up front: senders can then join without role negotiation.
             var groupFailure = await { manager.createGroup(channel, it) }
             if (groupFailure == WifiP2pManager.BUSY) {
@@ -303,6 +306,7 @@ class WifiDirectTransport @Inject constructor(
         const val LISTEN_REFRESH_MS = 30_000L
         const val JOIN_TIMEOUT_MS = 60_000L
         const val SOCKET_ATTEMPTS = 4
+        const val GROUP_START_DELAY_MS = 3_000L
     }
 }
 
