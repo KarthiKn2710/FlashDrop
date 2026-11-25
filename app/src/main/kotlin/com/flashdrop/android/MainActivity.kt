@@ -1,6 +1,8 @@
 package com.flashdrop.android
 
+import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -10,6 +12,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -26,6 +30,7 @@ import androidx.compose.animation.slideOutHorizontally
 import com.flashdrop.core.designsystem.FdColors
 import com.flashdrop.core.designsystem.FdMotion
 import com.flashdrop.core.designsystem.FlashDropTheme
+import com.flashdrop.domain.repository.SelectionRepository
 import com.flashdrop.domain.repository.TransferController
 import com.flashdrop.feature.history.HistoryDetailScreen
 import com.flashdrop.feature.history.HistoryScreen
@@ -41,15 +46,43 @@ import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    @Inject lateinit var selection: SelectionRepository
+
+    /** Bumped each time files arrive from another app's Share menu; the nav host opens Send. */
+    private var shareRequest by mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val dark = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         enableEdgeToEdge(statusBarStyle = dark, navigationBarStyle = dark)
+        // Only a fresh launch carries a new share: a recreated activity has already handled it,
+        // and reopening from Recents replays the old intent.
+        val fromHistory = intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (savedInstanceState == null && !fromHistory) handleShare(intent)
         setContent {
             FlashDropTheme {
-                Surface(Modifier.fillMaxSize(), color = FdColors.Background) { FlashDropNavHost() }
+                Surface(Modifier.fillMaxSize(), color = FdColors.Background) { FlashDropNavHost(shareRequest) }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleShare(intent)
+    }
+
+    private fun handleShare(intent: Intent?) {
+        if (intent == null || !SharedFiles.isShare(intent)) return
+        val uris = SharedFiles.uris(intent)
+        if (uris.isEmpty()) {
+            Toast.makeText(this, "FlashDrop can send files, not text or links", Toast.LENGTH_LONG).show()
+            return
+        }
+        // A share is a fresh choice of what to send, so it replaces anything picked earlier.
+        selection.clear()
+        selection.addFiles(uris.map { it.toString() })
+        shareRequest++
     }
 }
 
@@ -82,9 +115,18 @@ private fun NavHostController.openTransfer() {
  * Home, then Receive: incoming request, pairing and approval, transfer.
  */
 @Composable
-fun FlashDropNavHost(appViewModel: AppViewModel = hiltViewModel()) {
+fun FlashDropNavHost(shareRequest: Int = 0, appViewModel: AppViewModel = hiltViewModel()) {
     val nav = rememberNavController()
     val session by appViewModel.session.collectAsStateWithLifecycle()
+
+    // Files shared from another app: show them on the selection screen, on top of Home.
+    LaunchedEffect(shareRequest) {
+        if (shareRequest == 0) return@LaunchedEffect
+        nav.navigate(Routes.SEND) {
+            popUpTo(Routes.HOME)
+            launchSingleTop = true
+        }
+    }
 
     // A pairing code or an incoming request needs the user wherever they are in the app.
     val needsAttention = session?.pairing != null || session?.incoming != null

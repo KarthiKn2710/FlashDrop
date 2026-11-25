@@ -1,6 +1,7 @@
 package com.flashdrop.feature.send
 
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.NoteAdd
+import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -45,6 +47,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -122,7 +125,13 @@ fun SelectionScreen(onBack: () -> Unit, onContinue: () -> Unit, viewModel: Selec
     // A tick when picked files finish loading into the list.
     OnChange(state.totalCount) { count -> if (count > 0 && !state.loading) haptics.perform(Haptic.Tick) }
 
-    // The system picker is the Storage Access Framework: no broad storage permission is needed.
+    // Android's photo picker: a grid with drag-to-select, no permission needed. Where the system
+    // has none (some Android 10 and 11 phones without the Play update) it falls back to the
+    // document picker filtered to images and videos.
+    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
+        if (uris.isNotEmpty()) viewModel.addFiles(uris.map { it.toString() })
+    }
+    // The document picker is the Storage Access Framework: no broad storage permission is needed.
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) viewModel.addFiles(uris.map { it.toString() })
     }
@@ -158,10 +167,11 @@ fun SelectionScreen(onBack: () -> Unit, onContinue: () -> Unit, viewModel: Selec
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            Row(Modifier.padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                SecondaryButton("Add files", { pickFiles.launch(arrayOf("*/*")) }, Modifier.weight(1f), icon = Icons.Rounded.NoteAdd)
-                SecondaryButton("Add folder", { pickFolder.launch(null) }, Modifier.weight(1f), icon = Icons.Rounded.CreateNewFolder)
-            }
+            AddButtons(
+                onPhotos = { pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
+                onFiles = { pickFiles.launch(arrayOf("*/*")) },
+                onFolder = { pickFolder.launch(null) },
+            )
             if (state.loading) {
                 LinearProgressIndicator(
                     Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp).height(2.dp),
@@ -199,6 +209,28 @@ fun SelectionScreen(onBack: () -> Unit, onContinue: () -> Unit, viewModel: Selec
     }
 }
 
+/** Three sources side by side; with large text they stack so the labels stay whole. */
+@Composable
+private fun AddButtons(onPhotos: () -> Unit, onFiles: () -> Unit, onFolder: () -> Unit) {
+    val buttons: List<@Composable (Modifier) -> Unit> = listOf(
+        { m -> SecondaryButton("Photos", onPhotos, m, icon = Icons.Rounded.PhotoLibrary, contentPadding = ADD_PADDING) },
+        { m -> SecondaryButton("Files", onFiles, m, icon = Icons.Rounded.NoteAdd, contentPadding = ADD_PADDING) },
+        { m -> SecondaryButton("Folder", onFolder, m, icon = Icons.Rounded.CreateNewFolder, contentPadding = ADD_PADDING) },
+    )
+    if (LocalDensity.current.fontScale >= 1.3f) {
+        Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (button in buttons) button(Modifier.fillMaxWidth())
+        }
+    } else {
+        Row(Modifier.padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (button in buttons) button(Modifier.weight(1f))
+        }
+    }
+}
+
+// Three buttons share one row, so they get less side padding than a lone button.
+private val ADD_PADDING = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+
 @Composable
 private fun EmptySelection() {
     Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
@@ -206,7 +238,7 @@ private fun EmptySelection() {
             Text("Choose what to send", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Add files or whole folders. Folder structure is kept on the other device.",
+                "Add photos, files or whole folders. You can also share files to FlashDrop from Gallery, Files or any other app.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = FdColors.TextSecondary,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,

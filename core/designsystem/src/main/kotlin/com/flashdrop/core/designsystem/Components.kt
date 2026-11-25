@@ -206,9 +206,11 @@ fun SecondaryButton(
     icon: ImageVector? = null,
     color: Color = FdColors.TextPrimary,
     haptic: Haptic = Haptic.Tap,
+    contentPadding: PaddingValues = ButtonDefaults.ContentPadding,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val haptics = rememberHaptics()
+    val compact = contentPadding != ButtonDefaults.ContentPadding
     OutlinedButton(
         onClick = {
             haptics.perform(haptic)
@@ -220,10 +222,11 @@ fun SecondaryButton(
         shape = MaterialTheme.shapes.medium,
         border = BorderStroke(1.dp, FdColors.Border),
         colors = ButtonDefaults.outlinedButtonColors(contentColor = color),
+        contentPadding = contentPadding,
     ) {
         if (icon != null) {
             Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(if (compact) 6.dp else 8.dp))
         }
         Text(text, style = MaterialTheme.typography.labelLarge)
     }

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import com.flashdrop.core.model.SelectedItem
 import com.flashdrop.protocol.SourceReader
@@ -15,6 +16,9 @@ import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.InputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.coroutineContext
@@ -42,7 +46,8 @@ class DocumentScanner @Inject constructor(@ApplicationContext private val contex
                         if (!c.isNull(1)) size = c.getLong(1)
                     }
                 }
-                val finalName = name ?: uri.lastPathSegment ?: return@mapNotNull null
+                val reported = name ?: uri.lastPathSegment ?: return@mapNotNull null
+                val finalName = pickerName(uri, reported) ?: reported
                 val finalSize = size ?: measure(uri) ?: return@mapNotNull null
                 SelectedItem(text, finalName, finalName, finalSize, resolver.getType(uri) ?: OCTET_STREAM)
             } catch (e: Exception) {
@@ -124,6 +129,26 @@ class DocumentScanner @Inject constructor(@ApplicationContext private val contex
         }
     }
 
+    /**
+     * The photo picker hides real file names and reports "<id>.<ext>" (e.g. "37.jpg"), which
+     * means nothing on the other phone. Such items are named the way cameras name them, from
+     * the date taken: IMG_20261119_212400.jpg or VID_....mp4. The id keeps names unique.
+     */
+    private fun pickerName(uri: Uri, reported: String): String? {
+        val match = PICKER_NAME.matchEntire(reported) ?: return null
+        val (id, ext) = match.destructured
+        val taken = try {
+            resolver.query(uri, arrayOf(MediaStore.MediaColumns.DATE_TAKEN), null, null, null)?.use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null
+            }
+        } catch (e: Exception) {
+            null
+        } ?: return null
+        val prefix = if (resolver.getType(uri)?.startsWith("video/") == true) "VID" else "IMG"
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(taken))
+        return "${prefix}_${stamp}_$id.$ext"
+    }
+
     private fun queryName(uri: Uri): String? = try {
         resolver.query(uri, arrayOf(Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { c ->
             if (c.moveToFirst()) c.getString(0) else null
@@ -151,6 +176,7 @@ class DocumentScanner @Inject constructor(@ApplicationContext private val contex
     private companion object {
         const val OCTET_STREAM = "application/octet-stream"
         const val MAX_ITEMS = 100_000
+        val PICKER_NAME = Regex("""(\d+)\.(\w+)""")
         const val MAX_DEPTH = 32
     }
 }
